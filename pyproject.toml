@@ -39,6 +39,9 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
 ]
+neo4j = [
+    "neo4j>=5.0.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/shibing624/graphrag-lite"
