@@ -209,3 +209,7 @@ __marimo__/
 .node_modules/
 .DS_Store
 tmp/
+
+
+# tcm book data
+tcm_book/*

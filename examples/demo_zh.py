@@ -15,8 +15,9 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from graphrag_lite import GraphRAGLite
+from dotenv import load_dotenv
 
-
+load_dotenv()
 SAMPLE_TEXT = """
 《红楼梦》是中国古典四大名著之一，作者曹雪芹。
 
@@ -38,8 +39,12 @@ def main():
     # 初始化
     graph = GraphRAGLite(
         storage_path="./tmp/graphrag_demo_zh",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url=os.getenv("OPENAI_BASE_URL"),
+        api_key=os.getenv("DASHSCOPE_API_KEY"),
+        base_url=os.getenv("DASHSCOPE_BASE_URL"),
+        model="qwen-max",
+        embedding_model="text-embedding-v4",
+        embedding_api_key=os.getenv("DASHSCOPE_API_KEY"),
+        embedding_base_url=os.getenv("DASHSCOPE_BASE_URL"),
         enable_cache=True,
     )
     

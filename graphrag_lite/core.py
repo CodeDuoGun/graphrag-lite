@@ -38,6 +38,7 @@ from .utils import chunk_text, top_k_similar, count_tokens, truncate_text
 # Embedding API 重试配置
 EMB_MAX_RETRIES = 3
 EMB_RETRY_DELAY = 1.0  # 秒
+EMB_MAX_BATCH_SIZE = 10  # 单次请求最大文本条数 (部分 API 如 DashScope 限制 ≤10)
 
 
 class GraphRAGLite:
@@ -49,6 +50,9 @@ class GraphRAGLite:
         model: str = "gpt-4o",
         embedding_model: str = "text-embedding-3-small",
         enable_cache: bool = True,
+        embedding_fn=None,
+        embedding_api_key: str = None,
+        embedding_base_url: str = None,
     ):
         """
         初始化 GraphRAGLite
@@ -60,6 +64,10 @@ class GraphRAGLite:
             model: LLM 模型名称
             embedding_model: Embedding 模型名称
             enable_cache: 是否启用 LLM 缓存
+            embedding_fn: 自定义 embedding 函数，签名: (texts: list[str]) -> list[list[float]]
+                          若提供，则忽略 embedding_model / embedding_api_key / embedding_base_url
+            embedding_api_key: 单独给 Embedding 使用的 API Key（与 LLM 不同时使用）
+            embedding_base_url: 单独给 Embedding 使用的 Base URL（与 LLM 不同时使用）
         """
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -67,13 +75,26 @@ class GraphRAGLite:
         self.model = model
         self.embedding_model = embedding_model
         self.enable_cache = enable_cache
+        self.embedding_fn = embedding_fn  # 自定义 embedding 函数
         
-        # OpenAI 客户端 (同步 + 异步)
+        # OpenAI 客户端 (同步 + 异步) — 用于 LLM
         client_kwargs = {"api_key": api_key}
         if base_url:
             client_kwargs["base_url"] = base_url
         self.client = OpenAI(**client_kwargs)
         self.async_client = AsyncOpenAI(**client_kwargs)
+        
+        # Embedding 专用客户端（可与 LLM 使用不同的 base_url / api_key）
+        if embedding_fn is None:
+            emb_kwargs = {"api_key": embedding_api_key or api_key}
+            emb_base_url = embedding_base_url or base_url
+            if emb_base_url:
+                emb_kwargs["base_url"] = emb_base_url
+            self._emb_client = OpenAI(**emb_kwargs)
+            self._async_emb_client = AsyncOpenAI(**emb_kwargs)
+        else:
+            self._emb_client = None
+            self._async_emb_client = None
         
         # 图数据存储
         self.chunks: dict[str, dict] = {}      # chunk_id -> {content, doc_id}
@@ -133,9 +154,17 @@ class GraphRAGLite:
         return emb
 
     def _get_embeddings_batch(self, texts: list[str]) -> list[list[float]]:
-        """批量获取 embedding (减少 API 调用，带重试)"""
+        """批量获取 embedding (减少 API 调用，带重试)
+        
+        若初始化时传入了 embedding_fn，则直接调用自定义函数；
+        否则使用 OpenAI 兼容 API。
+        """
         if not texts:
             return []
+        
+        # 使用自定义 embedding 函数
+        if self.embedding_fn is not None:
+            return self.embedding_fn(texts)
         
         MAX_TOKENS = 8000
         all_embeddings = []
@@ -150,7 +179,7 @@ class GraphRAGLite:
             # 重试逻辑
             for attempt in range(EMB_MAX_RETRIES):
                 try:
-                    resp = self.client.embeddings.create(
+                    resp = self._emb_client.embeddings.create(
                         model=self.embedding_model,
                         input=batch,
                     )
@@ -168,7 +197,7 @@ class GraphRAGLite:
         
         for text in texts:
             t = count_tokens(text, self.embedding_model)
-            if batch_tokens + t > MAX_TOKENS:
+            if batch_tokens + t > MAX_TOKENS or len(batch) >= EMB_MAX_BATCH_SIZE:
                 flush()
             batch.append(text)
             batch_tokens += t
@@ -761,9 +790,18 @@ class GraphRAGLite:
         return emb
 
     async def _aget_embeddings_batch(self, texts: list[str], show_progress: bool = False, desc: str = "Embeddings") -> list[list[float]]:
-        """异步批量获取 embedding (带重试)"""
+        """异步批量获取 embedding (带重试)
+        
+        若初始化时传入了 embedding_fn，则在线程池中调用自定义函数；
+        否则使用 OpenAI 兼容 API。
+        """
         if not texts:
             return []
+        
+        # 使用自定义 embedding 函数（在线程池中执行，避免阻塞事件循环）
+        if self.embedding_fn is not None:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self.embedding_fn, texts)
         
         MAX_TOKENS = 8000
         all_embeddings = []
@@ -779,7 +817,7 @@ class GraphRAGLite:
             # 重试逻辑
             for attempt in range(EMB_MAX_RETRIES):
                 try:
-                    resp = await self.async_client.embeddings.create(
+                    resp = await self._async_emb_client.embeddings.create(
                         model=self.embedding_model,
                         input=batch,
                     )
@@ -798,7 +836,7 @@ class GraphRAGLite:
         
         for text in texts:
             t = count_tokens(text, self.embedding_model)
-            if batch_tokens + t > MAX_TOKENS:
+            if batch_tokens + t > MAX_TOKENS or len(batch) >= EMB_MAX_BATCH_SIZE:
                 await flush()
             batch.append(text)
             batch_tokens += t
