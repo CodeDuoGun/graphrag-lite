@@ -23,7 +23,7 @@ load_dotenv()
 
 NEO4J_URI      = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER     = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "your_password")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "")
 
 SAMPLE_TEXT = """
 《三国演义》是中国古典四大名著之一。
@@ -119,13 +119,13 @@ def main():
     print(f"  Neo4j 统计: {neo.get_stats()}")
 
     # 删除关系
-    print("  删除关系: 司马懿 -> 曹操")
-    graph.neo4j_delete_relation("司马懿", "曹操")
+    # print("  删除关系: 司马懿 -> 曹操")
+    # graph.neo4j_delete_relation("司马懿", "曹操")
 
-    # 删除实体
-    print("  删除实体: 司马懿")
-    graph.neo4j_delete_entity("司马懿")
-    print(f"  实体列表: {graph.list_entities()}")
+    # # 删除实体
+    # print("  删除实体: 司马懿")
+    # graph.neo4j_delete_entity("司马懿")
+    # print(f"  实体列表: {graph.list_entities()}")
 
     print("\n完成！")
 

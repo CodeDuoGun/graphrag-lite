@@ -100,13 +100,25 @@ class Neo4jStore:
 
     def get_entity(self, name: str) -> Optional[dict]:
         """获取单个实体，返回 {name, type, description, embedding} 或 None"""
-        result = self._run("MATCH (e:Entity {name: $name}) RETURN e", name=name)
-        return self._parse_entity(result[0]["e"]) if result else None
+        result = self._run(
+            """
+            MATCH (e:Entity {name: $name})
+            RETURN e.name AS name, e.type AS type, e.description AS description, e.embedding AS embedding
+            """,
+            name=name,
+        )
+        return self._parse_entity_row(result[0]) if result else None
 
     def list_entities(self) -> list[dict]:
         """列出所有实体"""
-        return [self._parse_entity(r["e"]) for r in
-                self._run("MATCH (e:Entity) RETURN e ORDER BY e.name")]
+        result = self._run(
+            """
+            MATCH (e:Entity)
+            RETURN e.name AS name, e.type AS type, e.description AS description, e.embedding AS embedding
+            ORDER BY e.name
+            """
+        )
+        return [self._parse_entity_row(row) for row in result]
 
     def update_entity(self, name: str, description: str,
                       embedding: list[float] = None) -> bool:
@@ -123,12 +135,25 @@ class Neo4jStore:
         return (result[0]["n"] if result else 0) > 0
 
     @staticmethod
-    def _parse_entity(node) -> dict:
-        emb = node.get("embedding")
+    def _parse_entity_row(row: dict) -> dict:
+        """从展开的 Cypher 返回行解析实体"""
+        emb = row.get("embedding")
         return {
-            "name": node["name"],
-            "type": node.get("type", ""),
-            "description": node.get("description", ""),
+            "name": row["name"],
+            "type": row.get("type", "") or "",
+            "description": row.get("description", "") or "",
+            "embedding": json.loads(emb) if emb else None,
+        }
+
+    @staticmethod
+    def _parse_entity(node) -> dict:
+        """兼容旧调用（不再使用，保留备用）"""
+        props = {k: v for k, v in node.items()} if hasattr(node, "items") else {}
+        emb = props.get("embedding")
+        return {
+            "name": props["name"],
+            "type": props.get("type", ""),
+            "description": props.get("description", ""),
             "embedding": json.loads(emb) if emb else None,
         }
 
@@ -166,18 +191,31 @@ class Neo4jStore:
         result = self._run(
             """
             MATCH (a:Entity {name: $src})-[r:RELATION]->(b:Entity {name: $tgt})
-            RETURN r
+            RETURN r.keywords AS keywords, r.description AS description, r.embedding AS embedding
             """,
             src=src, tgt=tgt,
         )
-        return self._parse_relation(src, tgt, result[0]["r"]) if result else None
+        if not result:
+            return None
+        row = result[0]
+        emb = row.get("embedding")
+        return {
+            "src": src, "tgt": tgt,
+            "keywords": row.get("keywords", "") or "",
+            "description": row.get("description", "") or "",
+            "embedding": json.loads(emb) if emb else None,
+        }
 
     def list_relations(self) -> list[dict]:
         """列出所有关系"""
         result = self._run(
-            "MATCH (a:Entity)-[r:RELATION]->(b:Entity) RETURN a.name AS src, b.name AS tgt, r"
+            """
+            MATCH (a:Entity)-[r:RELATION]->(b:Entity)
+            RETURN a.name AS src, b.name AS tgt,
+                   r.keywords AS keywords, r.description AS description, r.embedding AS embedding
+            """
         )
-        return [self._parse_relation(row["src"], row["tgt"], row["r"]) for row in result]
+        return [self._parse_relation_row(row) for row in result]
 
     def get_relations_by_entity(self, name: str) -> list[dict]:
         """获取与某实体相关的所有关系（出边 + 入边）"""
@@ -185,19 +223,34 @@ class Neo4jStore:
             """
             MATCH (a:Entity)-[r:RELATION]->(b:Entity)
             WHERE a.name = $name OR b.name = $name
-            RETURN a.name AS src, b.name AS tgt, r
+            RETURN a.name AS src, b.name AS tgt,
+                   r.keywords AS keywords, r.description AS description, r.embedding AS embedding
             """,
             name=name,
         )
-        return [self._parse_relation(row["src"], row["tgt"], row["r"]) for row in result]
+        return [self._parse_relation_row(row) for row in result]
+
+    @staticmethod
+    def _parse_relation_row(row: dict) -> dict:
+        """从展开的 Cypher 返回行解析关系（绕开驱动对象序列化问题）"""
+        emb = row.get("embedding")
+        return {
+            "src": row["src"],
+            "tgt": row["tgt"],
+            "keywords": row.get("keywords", "") or "",
+            "description": row.get("description", "") or "",
+            "embedding": json.loads(emb) if emb else None,
+        }
 
     @staticmethod
     def _parse_relation(src: str, tgt: str, rel) -> dict:
-        emb = rel.get("embedding")
+        """兼容旧调用（不再使用，保留备用）"""
+        props = {k: v for k, v in rel.items()} if hasattr(rel, "items") else {}
+        emb = props.get("embedding")
         return {
             "src": src, "tgt": tgt,
-            "keywords": rel.get("keywords", ""),
-            "description": rel.get("description", ""),
+            "keywords": props.get("keywords", ""),
+            "description": props.get("description", ""),
             "embedding": json.loads(emb) if emb else None,
         }
 
@@ -236,28 +289,55 @@ class Neo4jStore:
     def get_chunk(self, chunk_id: str) -> Optional[dict]:
         """获取单个文本块"""
         result = self._run(
-            "MATCH (c:Chunk {chunk_id: $chunk_id}) RETURN c", chunk_id=chunk_id
+            """
+            MATCH (c:Chunk {chunk_id: $chunk_id})
+            RETURN c.chunk_id AS chunk_id, c.content AS content, c.doc_id AS doc_id, c.embedding AS embedding
+            """,
+            chunk_id=chunk_id,
         )
-        return self._parse_chunk(result[0]["c"]) if result else None
+        return self._parse_chunk_row(result[0]) if result else None
 
     def list_chunks(self, doc_id: str = None) -> list[dict]:
         """列出文本块，doc_id 不为空时只返回该文档的块"""
         if doc_id:
             result = self._run(
-                "MATCH (c:Chunk {doc_id: $doc_id}) RETURN c ORDER BY c.chunk_id",
+                """
+                MATCH (c:Chunk {doc_id: $doc_id})
+                RETURN c.chunk_id AS chunk_id, c.content AS content, c.doc_id AS doc_id, c.embedding AS embedding
+                ORDER BY c.chunk_id
+                """,
                 doc_id=doc_id,
             )
         else:
-            result = self._run("MATCH (c:Chunk) RETURN c ORDER BY c.chunk_id")
-        return [self._parse_chunk(r["c"]) for r in result]
+            result = self._run(
+                """
+                MATCH (c:Chunk)
+                RETURN c.chunk_id AS chunk_id, c.content AS content, c.doc_id AS doc_id, c.embedding AS embedding
+                ORDER BY c.chunk_id
+                """
+            )
+        return [self._parse_chunk_row(row) for row in result]
+
+    @staticmethod
+    def _parse_chunk_row(row: dict) -> dict:
+        """从展开的 Cypher 返回行解析文本块"""
+        emb = row.get("embedding")
+        return {
+            "chunk_id": row["chunk_id"],
+            "content": row.get("content", "") or "",
+            "doc_id": row.get("doc_id", "") or "",
+            "embedding": json.loads(emb) if emb else None,
+        }
 
     @staticmethod
     def _parse_chunk(node) -> dict:
-        emb = node.get("embedding")
+        """兼容旧调用（不再使用，保留备用）"""
+        props = {k: v for k, v in node.items()} if hasattr(node, "items") else {}
+        emb = props.get("embedding")
         return {
-            "chunk_id": node["chunk_id"],
-            "content": node.get("content", ""),
-            "doc_id": node.get("doc_id", ""),
+            "chunk_id": props["chunk_id"],
+            "content": props.get("content", ""),
+            "doc_id": props.get("doc_id", ""),
             "embedding": json.loads(emb) if emb else None,
         }
 
